@@ -1,8 +1,7 @@
-from PyQt5.QtWidgets import QWidget
+from PyQt5.QtWidgets import QWidget, QSizePolicy
 from PyQt5.QtGui import QPainter, QPen, QColor, QImage, QPixmap
 from PyQt5.QtCore import Qt, QRect
 import cv2
-import numpy as np
 
 
 # 继承 QWidget 而不是 QLabel，因为要自己画图
@@ -12,12 +11,15 @@ class ImageCanvas(QWidget):
         self.setMouseTracking(False)
         self.drawing = False
         self.brush_size = 3
-        self.brush_color = QColor(255, 0, 0)  # 默认红色
+        self.brush_color = QColor("#faad14")  # 默认颜色
 
         # 核心数据
         self.original_cv_img = None  # 原始 CV2 图像 (BGR)
         self.mask_img = None  # 涂鸦记录层 (BGR)
         self.display_pixmap = None  # 当前用于显示的 Qt 图像缓存
+
+        # 告诉布局管理器：不要管我的建议尺寸，有多少空间就给我多少
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
 
     def load_image(self, img_path):
         """加载图片"""
@@ -58,8 +60,8 @@ class ImageCanvas(QWidget):
         Qt 会自动处理窗口大小变化，只需要把图片画在正中间即可
         """
         painter = QPainter(self)
-        # 填充背景 (灰色)
-        painter.fillRect(self.rect(), QColor("#f0f0f0"))
+        # 图片周围的填充背景
+        painter.fillRect(self.rect(), QColor("#ffffff"))
 
         if self.display_pixmap and not self.display_pixmap.isNull():
             # 计算图片应该画在哪 (保持比例居中)
