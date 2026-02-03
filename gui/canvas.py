@@ -22,15 +22,22 @@ class ImageCanvas(QWidget):
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
 
     def load_image(self, img_path):
-        """加载图片"""
-        self.original_cv_img = cv2.imread(img_path)
-        if self.original_cv_img is None:
+        """加载图片 (自动转换为黑白)"""
+        # 读取原始文件
+        raw_img = cv2.imread(img_path)
+        if raw_img is None:
             return False
 
-        # 初始化 Mask (拷贝一份原图)
+        # 强制转换为灰度图，但保留 3 通道结构 (BGR)
+        # 步骤: BGR (3通道) -> Gray (1通道) -> BGR (3通道)
+        # 这样做的目的是让用户只能看到黑白底图，但画笔依然可以在上面画彩色
+        gray = cv2.cvtColor(raw_img, cv2.COLOR_BGR2GRAY)
+        self.original_cv_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+        # 初始化 Mask (基于这张黑白图)
         self.mask_img = self.original_cv_img.copy()
 
-        # 更新显示缓存
+        # 更新显示
         self.update_display_from_cv(self.mask_img)
         return True
 

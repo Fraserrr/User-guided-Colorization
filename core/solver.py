@@ -11,12 +11,17 @@ class ColorizationSolver:
         :param original_image_path: 原始黑白图片的路径
         """
         # 读取原始图片
-        self.bgr_img = cv2.imread(original_image_path)
-        if self.bgr_img is None:
+        raw_img = cv2.imread(original_image_path)
+        if raw_img is None:
             raise ValueError(f"无法读取图片: {original_image_path}")
 
+        # 强制转为黑白 (3通道)
+        # 必须与 GUI 逻辑保持严格一致，否则后续计算涂鸦差异时，会因为背景像素值不匹配而导致算法失效。
+        gray = cv2.cvtColor(raw_img, cv2.COLOR_BGR2GRAY)
+        self.bgr_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
         # 转换为 YUV 颜色空间
-        # Y: 亮度 (0-255), U/V: 色度
+        # 此时 U 和 V 通道理论上应该是 128 (灰色)，只用 Y 通道做亮度参考
         self.yuv_img = cv2.cvtColor(self.bgr_img, cv2.COLOR_BGR2YUV)
 
         # 提取 Y 通道并归一化到 [0, 1]，用于计算权重
