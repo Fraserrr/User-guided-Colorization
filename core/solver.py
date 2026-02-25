@@ -8,7 +8,6 @@ class ColorizationSolver:
     def __init__(self, original_image_path):
         """
         初始化求解器
-        :param original_image_path: 原始黑白图片的路径
         """
         # 读取原始图片
         raw_img = cv2.imread(original_image_path)
@@ -24,19 +23,15 @@ class ColorizationSolver:
 
     def solve(self, marked_img_bgr):
         """
-        核心求解函数 (结合 Levin 原版扩散 与 降采样加速)
-        :param marked_img_bgr: 用户涂鸦后的图片 (BGR格式)
-        :return: 上色完成的 BGR 图片
+        核心求解函数 (结合 降采样加速 与 局部方差保边)
         """
         # ==========================================
-        # 必须在高分辨率下计算 Mask
-        # 防止因降采样插值导致的背景差异被误认为是灰色涂鸦
+        # 提取高分辨率下的精准 Mask，杜绝假约束
         # ==========================================
         diff = np.abs(self.orig_bgr_img.astype(np.int16) - marked_img_bgr.astype(np.int16))
-        # 生成二值化的原始 Mask
         is_colored_orig = (np.sum(diff, axis=2) > 10).astype(np.uint8) * 255
 
-        # 设定最大计算分辨率阈值 (例如长边最大 400 像素)
+        # 设定最大计算分辨率阈值
         max_dim = 400
         scale_factor = 1.0
 
@@ -47,10 +42,9 @@ class ColorizationSolver:
 
             # 降采样图片
             work_bgr = cv2.resize(self.orig_bgr_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-            # 涂鸦图和 Mask 必须使用最近邻插值，保证颜色纯度
+            # 涂鸦图和 Mask 必须使用最近邻插值
             work_marked = cv2.resize(marked_img_bgr, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
             work_mask = cv2.resize(is_colored_orig, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
-            # 根据准确缩放后的 Mask 确定着色点
             is_colored = work_mask > 0
         else:
             work_bgr = self.orig_bgr_img.copy()
@@ -63,17 +57,16 @@ class ColorizationSolver:
         work_rows, work_cols = work_Y.shape
         num_pixels = work_rows * work_cols
 
-        # 提取用户指定的 U, V 值
         marked_yuv = cv2.cvtColor(work_marked, cv2.COLOR_BGR2YUV)
         U_marked = marked_yuv[:, :, 1].astype(np.float64) / 255.0
         V_marked = marked_yuv[:, :, 2].astype(np.float64) / 255.0
 
-        # 构建稀疏线性方程组 Ax = b (使用原版 Levin 全局方差逻辑)
+        # ==========================================
+        # 构建稀疏线性方程组 Ax = b (引入策略 B: 局部方差)
+        # ==========================================
         A = self._get_laplacian_matrix(work_Y)
 
-        # 应用约束条件
         colored_indices = np.nonzero(is_colored.ravel())[0]
-
         lambda_const = 1e4
         D = sparse.lil_matrix((num_pixels, num_pixels))
         D[colored_indices, colored_indices] = 1
@@ -81,10 +74,8 @@ class ColorizationSolver:
 
         A_final = A + lambda_const * D
 
-        # 分别求解 U 和 V 通道
         b_u = np.zeros(num_pixels)
         b_v = np.zeros(num_pixels)
-
         flat_U = U_marked.ravel()
         flat_V = V_marked.ravel()
 
@@ -96,7 +87,6 @@ class ColorizationSolver:
         new_v = spsolve(A_final, b_v)
         print("求解完成!")
 
-        # 将一维结果转回二维
         work_U_2d = new_u.reshape(work_rows, work_cols)
         work_V_2d = new_v.reshape(work_rows, work_cols)
 
@@ -108,22 +98,19 @@ class ColorizationSolver:
             final_U = work_U_2d
             final_V = work_V_2d
 
-        # 合成最终图像
         orig_yuv = cv2.cvtColor(self.orig_bgr_img, cv2.COLOR_BGR2YUV)
         result_yuv = np.zeros_like(orig_yuv)
 
-        # 【画质核心】原图的高分辨率 Y (亮度纹理) 保持绝对不变
         result_yuv[:, :, 0] = orig_yuv[:, :, 0]
         result_yuv[:, :, 1] = (final_U * 255).clip(0, 255).astype(np.uint8)
         result_yuv[:, :, 2] = (final_V * 255).clip(0, 255).astype(np.uint8)
 
-        # 转回 BGR 用于显示
         result_bgr = cv2.cvtColor(result_yuv, cv2.COLOR_YUV2BGR)
         return result_bgr
 
     def _get_laplacian_matrix(self, Y_channel):
         """
-        构建稀疏权重矩阵 (回归 Levin et al. 原版逻辑)
+        构建稀疏权重矩阵 (策略: 自适应局部方差保边)
         """
         rows, cols = Y_channel.shape
         num_pixels = rows * cols
@@ -131,11 +118,22 @@ class ColorizationSolver:
         window_size = 1
         inds_M = np.arange(num_pixels).reshape((rows, cols))
 
+        # ==========================================
+        # 矩阵化计算自适应局部方差
+        # ==========================================
+        mean_Y = cv2.boxFilter(Y_channel, -1, (3, 3))
+        mean_Y_sq = cv2.boxFilter(Y_channel ** 2, -1, (3, 3))
+
+        # 局部方差 = 平方均值 - 均值的平方
+        var_Y = mean_Y_sq - mean_Y ** 2
+
+        # 阈值微调：设置为 2e-5，保证纯色平滑区域的颜色顺畅扩散，避免出现噪点阻断
+        var_Y = np.maximum(var_Y, 2e-5)
+
         data = []
         row_inds = []
         col_inds = []
 
-        # 遍历 3x3 邻域 (8 个邻居)
         for dy in range(-window_size, window_size + 1):
             for dx in range(-window_size, window_size + 1):
                 if dx == 0 and dy == 0:
@@ -150,14 +148,13 @@ class ColorizationSolver:
                 Y_center = Y_channel[row_start:row_end, col_start:col_end]
                 Y_neighbor = Y_channel[row_start + dy: row_end + dy, col_start + dx: col_end + dx]
 
-                # 回退到原始的方差计算逻辑
-                diff = Y_center - Y_neighbor
-                variance = np.mean(diff ** 2)
-                if variance < 1e-6:
-                    variance = 1e-6
+                # 获取对应的局部方差
+                var_center = var_Y[row_start:row_end, col_start:col_end]
 
-                # 原始权重公式
-                weights = np.exp(- (diff ** 2) / (2 * variance))
+                diff = Y_center - Y_neighbor
+
+                # 局部方差保边公式
+                weights = np.exp(- (diff ** 2) / (2 * var_center))
 
                 data.append(-weights.flatten())
                 row_inds.append(center_inds.flatten())
